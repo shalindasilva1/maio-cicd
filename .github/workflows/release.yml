@@ -48,14 +48,25 @@ jobs:
 
       - name: Smoke test container
         run: |
-          cid=$(docker run -d -p 8080:8080 "$IMAGE")
-          sleep 2
-          curl -sS --fail --no-progress-meter -H "Accept: application/json" http://localhost:8080/health | jq
-          curl -s -X POST http://localhost:8080/predict \
-            -H "Content-Type: application/json" \
+
+          IMAGE_LOWER=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+
+          cid="$(docker run -d -p 8080:8080 "$IMAGE_LOWER")"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+          for i in $(seq 1 30); do
+            if curl --fail -sS --no-progress-meter http://localhost:8080/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl --fail -sS --no-progress-meter -H "Accept: application/json" \
+            http://localhost:8080/health | jq .
+
+          curl --fail -sS --no-progress-meter -H "Content-Type: application/json" \
             -d '{"age":0.02,"sex":-0.044,"bmi":0.06,"bp":-0.03,"s1":-0.02,"s2":0.03,"s3":-0.02,"s4":0.02,"s5":0.02,"s6":-0.001}' \
-            | jq .
-          docker rm -f "$cid"
+            http://localhost:8080/predict | jq .
 
       - name: Push image
         run: docker push "$IMAGE"
