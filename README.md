@@ -7,19 +7,13 @@ Every tagged release automatically builds and publishes a Docker image to **GitH
 
 ## 🐳 Run with Docker (recommended)
 
-Your published image lives at:
+Published image lives at:
 
 ```
 ghcr.io/shalindasilva1/maio-cicd
 ```
 
-### 1. (If private) Log in to GHCR
-
-```bash
-echo $GITHUB_TOKEN | docker login ghcr.io -u shalindasilva1 --password-stdin
-```
-
-### 2. Pull and run the container
+### Pull and run the container
 
 ```bash
 docker pull ghcr.io/shalindasilva1/maio-cicd:latest
