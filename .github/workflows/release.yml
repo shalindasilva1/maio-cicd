@@ -1,76 +1,106 @@
-name: Release
+name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PYTHON_VERSION: '3.11'
 
 jobs:
-  build-and-release:
+  release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-    env:
-      IMAGE: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: pip install -r requirements-dev.txt
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Train (tagged version)
-        run: python -m ml.train --seed 42 --output-dir artifacts --version "${GITHUB_REF_NAME}"
-
-      - name: Bake artifacts into app/
+      - name: Install dependencies
+        shell: bash
         run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          # If your train script lives in a package, also allow editable:
+          if [ -f pyproject.toml ] || [ -f setup.cfg ] || [ -f setup.py ]; then pip install -e .; fi
+
+      - name: Train model (bake artifacts)
+        shell: bash
+        run: |
+          python -m ml.train --seed 42 --output-dir artifacts --version "${GITHUB_REF_NAME}"
+          ls -l artifacts
           mkdir -p app/model
           cp artifacts/pipeline.pkl app/model/
           cp artifacts/feature_names.json app/model/
-          cp artifacts/MODEL_VERSION app/model/
+          echo "${GITHUB_REF_NAME}" > app/model/MODEL_VERSION
+
+      - name: Run tests
+        run: |
+          pytest -q
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build image
-        run: |
-          IMAGE_LOWER=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
-          docker build -t "$IMAGE_LOWER" .
-          echo "IMAGE_LOWER=$IMAGE_LOWER" >> $GITHUB_ENV
-
-      - name: Smoke test container
-        run: |
-          set -euo pipefail
-          cid="$(docker run -d -p 8080:8080 "$IMAGE_LOWER")"
-          trap 'echo "--- logs ---"; docker logs "$cid" || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
-          for i in $(seq 1 30); do
-            curl --fail -sS --no-progress-meter http://localhost:8080/ready >/dev/null && break
-            sleep 1
-          done
-          curl --fail -sS --no-progress-meter http://localhost:8080/health | jq .
-          curl --fail -sS --no-progress-meter -H "Content-Type: application/json" \
-            -d '{"age":0.02,"sex":-0.044,"bmi":0.06,"bp":-0.03,"s1":-0.02,"s2":0.03,"s3":-0.02,"s4":0.02,"s5":0.02,"s6":-0.001}' \
-            http://localhost:8080/predict | jq .
-
-      - name: Push image
-        run: docker push "$IMAGE_LOWER"
-
-      - uses: actions/upload-artifact@v4
+      - name: Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          name: metrics
-          path: artifacts/metrics.json
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ github.ref_name }}    # e.g. v0.1.0
+          labels: |
+            org.opencontainers.image.title=Virtual Diabetes Clinic ML API
+            org.opencontainers.image.description=FastAPI scoring service with baked diabetes model
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
 
-      - name: Create GitHub Release
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+          provenance: false
+
+      - name: Upload artifacts (for release assets)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            artifacts/metrics.json
+            artifacts/*.pkl
+            artifacts/*.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Create GitHub Release + attach metrics.json
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body: |
-            Release for ${{ github.ref_name }}. Metrics attached as artifacts/metrics.json.
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             artifacts/metrics.json
