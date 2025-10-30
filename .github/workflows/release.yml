@@ -2,8 +2,7 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 jobs:
   build-and-release:
@@ -16,18 +15,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
 
-      - name: Install
-        run: pip install -r requirements-dev.txt
-
-      - name: Train (v0.1 linear)
-        run: |
-          python -m ml.train --seed 42 --output-dir artifacts --version "${GITHUB_REF_NAME}"
+      - name: Train (tagged version)
+        run: python -m ml.train --seed 42 --output-dir artifacts --version "${GITHUB_REF_NAME}"
 
       - name: Bake artifacts into app/
         run: |
@@ -44,38 +38,29 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image
-        run: docker build -t "$IMAGE" .
+        run: |
+          IMAGE_LOWER=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          docker build -t "$IMAGE_LOWER" .
+          echo "IMAGE_LOWER=$IMAGE_LOWER" >> $GITHUB_ENV
 
       - name: Smoke test container
         run: |
           set -euo pipefail
-
-          IMAGE_LOWER=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
           cid="$(docker run -d -p 8080:8080 "$IMAGE_LOWER")"
-          trap 'echo "--- container logs ---"; docker logs "$cid" || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
-
-          # Wait for /health
+          trap 'echo "--- logs ---"; docker logs "$cid" || true; docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 30); do
-            if curl --fail -sS --no-progress-meter http://localhost:8080/health >/dev/null; then
-              break
-            fi
+            curl --fail -sS --no-progress-meter http://localhost:8080/ready >/dev/null && break
             sleep 1
           done
-
-          echo "Health:"
-          curl --fail -sS --no-progress-meter -H "Accept: application/json" \
-            http://localhost:8080/health | jq .
-
-          echo "Predict:"
+          curl --fail -sS --no-progress-meter http://localhost:8080/health | jq .
           curl --fail -sS --no-progress-meter -H "Content-Type: application/json" \
             -d '{"age":0.02,"sex":-0.044,"bmi":0.06,"bp":-0.03,"s1":-0.02,"s2":0.03,"s3":-0.02,"s4":0.02,"s5":0.02,"s6":-0.001}' \
             http://localhost:8080/predict | jq .
 
       - name: Push image
-        run: docker push "$IMAGE"
+        run: docker push "$IMAGE_LOWER"
 
-      - name: Upload metrics artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: metrics
           path: artifacts/metrics.json
@@ -86,7 +71,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body: |
-            Baseline v0.1 — StandardScaler + LinearRegression.
-            Metrics attached as artifacts/metrics.json.
+            Release for ${{ github.ref_name }}. Metrics attached as artifacts/metrics.json.
           files: |
             artifacts/metrics.json

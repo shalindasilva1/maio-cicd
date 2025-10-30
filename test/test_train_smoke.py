@@ -1,27 +1,17 @@
-"""Smoke tests for model training pipeline.
+"""Smoke tests for training pipeline."""
 
-These tests ensure that the training script runs end-to-end,
-produces output artifacts, and returns valid evaluation metrics.
-"""
+from __future__ import annotations
 
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
-import shutil
 
 
 def test_training_smoke():
-    """Run a minimal training pipeline smoke test.
-
-    This test verifies that the training script:
-      - Executes successfully from the command line.
-      - Produces expected output files (model, features, metrics).
-      - Outputs a valid metrics dictionary with a positive RMSE.
-
-    The test uses a temporary directory for artifacts and cleans it up after execution.
-    """
+    """Run training, assert artifacts and sane metrics exist."""
     tmp = tempfile.mkdtemp()
     try:
         cmd = [
@@ -38,9 +28,9 @@ def test_training_smoke():
         out = subprocess.check_output(cmd, text=True)
         metrics = json.loads(out)
 
-        assert "rmse" in metrics and metrics["rmse"] > 0, "RMSE missing or invalid"
-        assert (pathlib.Path(tmp) / "pipeline.pkl").exists(), "Model file not found"
-        assert (pathlib.Path(tmp) / "feature_names.json").exists(), "Feature list missing"
-        assert (pathlib.Path(tmp) / "metrics.json").exists(), "Metrics file missing"
+        assert "rmse" in metrics and metrics["rmse"] > 0
+        assert (pathlib.Path(tmp) / "pipeline.pkl").exists()
+        assert (pathlib.Path(tmp) / "feature_names.json").exists()
+        assert (pathlib.Path(tmp) / "metrics.json").exists()
     finally:
         shutil.rmtree(tmp)

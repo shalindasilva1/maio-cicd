@@ -1,20 +1,18 @@
-"""FastAPI app for the Virtual Diabetes Clinic Triage service.
+"""FastAPI app for the Virtual Diabetes Clinic Triage service."""
 
-This service predicts a continuous diabetes progression index from
-the standard scikit-learn diabetes dataset features. The endpoint `/predict`
-accepts a JSON payload of normalized features and returns a numeric score.
-"""
+from __future__ import annotations
 
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, ValidationError, ConfigDict
 from joblib import load
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 APP_DIR = Path(__file__).resolve().parent
 MODEL_DIR = APP_DIR / "model"
@@ -22,32 +20,18 @@ PIPELINE_PATH = MODEL_DIR / "pipeline.pkl"
 FEATURES_PATH = MODEL_DIR / "feature_names.json"
 VERSION_PATH = MODEL_DIR / "MODEL_VERSION"
 
-# Swagger / OpenAPI configuration via environment variables
 DOCS_URL = os.getenv("DOCS_URL", "/docs")
 REDOC_URL = os.getenv("REDOC_URL", "/redoc")
 OPENAPI_URL = os.getenv("OPENAPI_URL", "/openapi.json")
-
-# Disable documentation endpoints if requested
-if os.getenv("DISABLE_DOCS", "").lower() in ("1", "true", "yes", "y"):
+if os.getenv("DISABLE_DOCS", "").lower() in {"1", "true", "yes", "y"}:
     DOCS_URL = None
     REDOC_URL = None
 
-# Lazy-loaded globals
-pipe = None
-feature_names = None
 model_version = VERSION_PATH.read_text().strip() if VERSION_PATH.exists() else "unknown"
 
 
 class DiabetesFeatures(BaseModel):
-    """Input schema for the diabetes prediction model.
-
-    Attributes:
-        age (float): Normalized patient age.
-        sex (float): Encoded sex indicator.
-        bmi (float): Body Mass Index (normalized).
-        bp (float): Mean arterial blood pressure.
-        s1–s6 (float): Serum and lipid measurements (normalized).
-    """
+    """Input schema for diabetes prediction."""
     age: float
     sex: float
     bmi: float
@@ -70,53 +54,32 @@ class DiabetesFeatures(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    """Response schema for predictions.
-
-    Attributes:
-        prediction (float): The predicted progression index (higher = worse).
-    """
+    """Response schema with the continuous progression score."""
     prediction: float
-
-    model_config = ConfigDict(
-        json_schema_extra={"example": {"prediction": 123.456}}
-    )
+    model_config = ConfigDict(json_schema_extra={"example": {"prediction": 123.456}})
 
 
-class ModelState:
-    """Manage shared model cache for pipeline and feature names."""
+@lru_cache(maxsize=1)
+def load_artifacts() -> Tuple[Any, List[str]]:
+    """Load the trained pipeline and feature names once (cached).
 
-    pipe = None
-    feature_names = None
-
-    @classmethod
-    def is_loaded(cls) -> bool:
-        """Check if the model has already been loaded."""
-        return cls.pipe is not None and cls.feature_names is not None
-
-    @classmethod
-    def load(cls):
-        """Load model artifacts into memory if not already loaded."""
-        if cls.is_loaded():
-            return
-        if not PIPELINE_PATH.exists() or not FEATURES_PATH.exists():
-            raise HTTPException(
-                status_code=500,
-                detail={"error": "Model artifacts missing."}
-            )
-        try:
-            cls.feature_names = json.loads(FEATURES_PATH.read_text())
-            cls.pipe = load(PIPELINE_PATH)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail={"error": "Failed to load model", "reason": str(e)}
-            ) from e
-
-
-def _ensure_model_loaded():
-    """Ensure the model is loaded into memory."""
-    ModelState.load()
-
+    Returns:
+        tuple: (pipeline, feature_names)
+    """
+    if not PIPELINE_PATH.exists() or not FEATURES_PATH.exists():
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Model artifacts missing. Train and bake artifacts into image."},
+        )
+    try:
+        pipe = load(PIPELINE_PATH)
+        feature_names: List[str] = json.loads(FEATURES_PATH.read_text())
+        return pipe, feature_names
+    except Exception as exc:  # pylint: disable=broad-except
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to load model", "reason": str(exc)},
+        ) from exc
 
 
 app = FastAPI(
@@ -124,13 +87,8 @@ app = FastAPI(
     version=model_version,
     description=(
         "Predicts short-term diabetes progression index (higher = worse). "
-        "Use the continuous score to prioritize nurse follow-ups.\n\n"
-        "### Endpoints\n"
-        "- **GET `/health`**: service status & model version\n"
-        "- **POST `/predict`**: pass standardized diabetes features, get continuous risk score\n"
+        "Use the continuous score to prioritize nurse follow-ups."
     ),
-    contact={"name": "MLOps Team", "url": "https://github.com"},
-    license_info={"name": "MIT"},
     docs_url=DOCS_URL,
     redoc_url=REDOC_URL,
     openapi_url=OPENAPI_URL,
@@ -139,12 +97,7 @@ app = FastAPI(
 
 @app.get("/", include_in_schema=False)
 def root():
-    """Redirect to the Swagger UI or return minimal health info.
-
-    Returns:
-        RedirectResponse | dict: Redirects to Swagger if enabled,
-        otherwise returns a simple JSON response.
-    """
+    """Redirect to docs if enabled, else return a small status."""
     if DOCS_URL:
         return RedirectResponse(url=DOCS_URL)
     return {"status": "ok", "model_version": model_version, "docs": "disabled"}
@@ -152,12 +105,15 @@ def root():
 
 @app.get("/health", tags=["ops"])
 def health():
-    """Health endpoint showing service status and model version.
-
-    Returns:
-        dict: `{ "status": "ok", "model_version": "..." }`
-    """
+    """Liveness probe (does not force model load)."""
     return {"status": "ok", "model_version": model_version}
+
+
+@app.get("/ready", tags=["ops"])
+def ready():
+    """Readiness probe that forces artifacts to be loaded."""
+    load_artifacts()
+    return {"status": "ready", "model_version": model_version}
 
 
 @app.post(
@@ -165,54 +121,22 @@ def health():
     response_model=PredictionResponse,
     tags=["inference"],
     responses={
-        400: {
-            "description": "Bad Request — invalid payload shape or types",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "detail": {
-                            "error": "Invalid payload",
-                            "issues": [
-                                {
-                                    "type": "float_parsing",
-                                    "loc": ["body", "age"],
-                                    "msg": "Input should be a valid number"
-                                }
-                            ]
-                        }
-                    }
-                }
-            },
-        },
-        500: {
-            "description": "Server Error — model not loaded or internal failure",
-            "content": {
-                "application/json": {
-                    "example": {"detail": {"error": "Failed to load model", "reason": "..."}}
-                }
-            },
-        },
+        400: {"description": "Invalid payload"},
+        500: {"description": "Model not available or internal error"},
     },
 )
 def predict(payload: Dict[str, Any]):
-    """Predict diabetes progression risk for a given patient feature set.
-
-    Args:
-        payload (Dict[str, Any]): JSON mapping of feature names to numeric values.
-
-    Returns:
-        dict: A JSON object with a single field `"prediction"` containing the model’s output.
-    """
+    """Predict the progression index for a single patient feature vector."""
     try:
         data = DiabetesFeatures(**payload)
-    except ValidationError as e:
+    except ValidationError as exc:
         raise HTTPException(
             status_code=400,
-            detail={"error": "Invalid payload", "issues": e.errors()}
-        ) from e
+            detail={"error": "Invalid payload", "issues": exc.errors()},
+        ) from exc
 
-    _ensure_model_loaded()
-
-    x = np.array([[getattr(data, fname) for fname in list(feature_names)]], dtype=float)
+    pipe, feature_names = load_artifacts()
+    row = [getattr(data, name) for name in feature_names]
+    x = np.array([row], dtype=float)
     pred = float(pipe.predict(x)[0])
     return {"prediction": pred}
