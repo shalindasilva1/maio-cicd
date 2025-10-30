@@ -31,7 +31,7 @@ def main():
     pipe.fit(X_train, y_train)
 
     preds = pipe.predict(X_test)
-    rmse = mean_squared_error(y_test, preds, squared=False)
+    rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
 
     out = pathlib.Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
