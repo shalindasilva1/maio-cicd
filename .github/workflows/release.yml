@@ -46,9 +46,10 @@ jobs:
           cp artifacts/feature_names.json app/model/
           echo "${GITHUB_REF_NAME}" > app/model/MODEL_VERSION
 
-      - name: Run tests
-        run: |
-          pytest -q
+      - name: Unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: pytest -q
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
