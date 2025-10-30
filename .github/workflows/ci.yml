@@ -20,17 +20,42 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
       - run: pip install -r requirements-dev.txt
+      - name: Prepare model artifacts for tests
+        run: |
+          python -m ml.train --seed 42 --output-dir artifacts --version ci
+          mkdir -p app/model
+          cp artifacts/pipeline.pkl app/model/
+          cp artifacts/feature_names.json app/model/
+          echo ci > app/model/MODEL_VERSION
       - name: Lint
         run: |
           pylint app ml tests
           ruff check .
       - name: Unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: pytest -q
       - name: Quick training smoke
         run: |
-          python -m ml.train --seed 42 --output-dir artifacts --version ci
+          set -euo pipefail
+
+          echo "📁 Listing artifacts:"
           ls -l artifacts
-          cat artifacts/metrics.json
+
+          echo "Metrics:"
+          cat artifacts/metrics.json | jq .
+
+          echo "Baking artifacts into app/model/"
+          mkdir -p app/model
+          cp artifacts/pipeline.pkl app/model/
+          cp artifacts/feature_names.json app/model/
+          echo ci > app/model/MODEL_VERSION
+
+          echo "Verifying baked files:"
+          test -f app/model/pipeline.pkl
+          test -f app/model/feature_names.json
+          test -f app/model/MODEL_VERSION
+
       - uses: actions/upload-artifact@v4
         with:
           name: training-artifacts
