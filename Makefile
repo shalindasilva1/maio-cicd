@@ -24,3 +24,8 @@ docker-build:
 
 docker-run:
 	docker run -p 8080:8080 ghcr.io/ORG/REPO:local
+
+train-v02:
+	python -m ml.train --model ridge --seed 42 --output-dir artifacts --version v0.2
+	mkdir -p app/model && cp artifacts/pipeline.pkl app/model/ && cp artifacts/feature_names.json app/model/
+	echo v0.2 > app/model/MODEL_VERSION

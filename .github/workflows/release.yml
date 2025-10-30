@@ -39,7 +39,12 @@ jobs:
       - name: Train model (bake artifacts)
         shell: bash
         run: |
-          python -m ml.train --seed 42 --output-dir artifacts --version "${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_NAME}" == "v0.1" ]]; then
+            python -m ml.train --model linear --seed 42 --output-dir artifacts --version "${GITHUB_REF_NAME}"
+          else
+            python -m ml.train --model ridge --seed 42 --output-dir artifacts --version "${GITHUB_REF_NAME}"
+          fi
+          cat artifacts/metrics.json  
           ls -l artifacts
           mkdir -p app/model
           cp artifacts/pipeline.pkl app/model/
