@@ -1,3 +1,10 @@
+"""FastAPI app for the Virtual Diabetes Clinic Triage service.
+
+This service predicts a continuous diabetes progression index from
+the standard scikit-learn diabetes dataset features. The endpoint `/predict`
+accepts a JSON payload of normalized features and returns a numeric score.
+"""
+
 import json
 import os
 from pathlib import Path
@@ -15,11 +22,12 @@ PIPELINE_PATH = MODEL_DIR / "pipeline.pkl"
 FEATURES_PATH = MODEL_DIR / "feature_names.json"
 VERSION_PATH = MODEL_DIR / "MODEL_VERSION"
 
-# Swagger / OpenAPI configuration via env (with sensible defaults)
+# Swagger / OpenAPI configuration via environment variables
 DOCS_URL = os.getenv("DOCS_URL", "/docs")
 REDOC_URL = os.getenv("REDOC_URL", "/redoc")
 OPENAPI_URL = os.getenv("OPENAPI_URL", "/openapi.json")
-# If DISABLE_DOCS is truthy, hide Swagger/Redoc entirely
+
+# Disable documentation endpoints if requested
 if os.getenv("DISABLE_DOCS", "").lower() in ("1", "true", "yes", "y"):
     DOCS_URL = None
     REDOC_URL = None
@@ -29,9 +37,28 @@ pipe = None
 feature_names = None
 model_version = VERSION_PATH.read_text().strip() if VERSION_PATH.exists() else "unknown"
 
+
 class DiabetesFeatures(BaseModel):
-    age: float; sex: float; bmi: float; bp: float
-    s1: float; s2: float; s3: float; s4: float; s5: float; s6: float
+    """Input schema for the diabetes prediction model.
+
+    Attributes:
+        age (float): Normalized patient age.
+        sex (float): Encoded sex indicator.
+        bmi (float): Body Mass Index (normalized).
+        bp (float): Mean arterial blood pressure.
+        s1–s6 (float): Serum and lipid measurements (normalized).
+    """
+    age: float
+    sex: float
+    bmi: float
+    bp: float
+    s1: float
+    s2: float
+    s3: float
+    s4: float
+    s5: float
+    s6: float
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -41,27 +68,56 @@ class DiabetesFeatures(BaseModel):
         }
     )
 
+
 class PredictionResponse(BaseModel):
+    """Response schema for predictions.
+
+    Attributes:
+        prediction (float): The predicted progression index (higher = worse).
+    """
     prediction: float
+
     model_config = ConfigDict(
         json_schema_extra={"example": {"prediction": 123.456}}
     )
 
-def _ensure_model_loaded():
-    global pipe, feature_names
-    if pipe is None or feature_names is None:
+
+class ModelState:
+    """Manage shared model cache for pipeline and feature names."""
+
+    pipe = None
+    feature_names = None
+
+    @classmethod
+    def is_loaded(cls) -> bool:
+        """Check if the model has already been loaded."""
+        return cls.pipe is not None and cls.feature_names is not None
+
+    @classmethod
+    def load(cls):
+        """Load model artifacts into memory if not already loaded."""
+        if cls.is_loaded():
+            return
         if not PIPELINE_PATH.exists() or not FEATURES_PATH.exists():
             raise HTTPException(
                 status_code=500,
-                detail={"error": "Model artifacts missing. Train and bake artifacts into image."}
+                detail={"error": "Model artifacts missing."}
             )
         try:
-            fns = json.loads(FEATURES_PATH.read_text())
-            model = load(PIPELINE_PATH)
+            cls.feature_names = json.loads(FEATURES_PATH.read_text())
+            cls.pipe = load(PIPELINE_PATH)
         except Exception as e:
-            raise HTTPException(status_code=500, detail={"error": "Failed to load model", "reason": str(e)})
-        feature_names = fns
-        pipe = model
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "Failed to load model", "reason": str(e)}
+            ) from e
+
+
+def _ensure_model_loaded():
+    """Ensure the model is loaded into memory."""
+    ModelState.load()
+
+
 
 app = FastAPI(
     title="Virtual Diabetes Triage Scorer",
@@ -80,16 +136,29 @@ app = FastAPI(
     openapi_url=OPENAPI_URL,
 )
 
+
 @app.get("/", include_in_schema=False)
 def root():
-    # Redirect root to Swagger UI if enabled; otherwise show a minimal message
+    """Redirect to the Swagger UI or return minimal health info.
+
+    Returns:
+        RedirectResponse | dict: Redirects to Swagger if enabled,
+        otherwise returns a simple JSON response.
+    """
     if DOCS_URL:
         return RedirectResponse(url=DOCS_URL)
     return {"status": "ok", "model_version": model_version, "docs": "disabled"}
 
+
 @app.get("/health", tags=["ops"])
 def health():
+    """Health endpoint showing service status and model version.
+
+    Returns:
+        dict: `{ "status": "ok", "model_version": "..." }`
+    """
     return {"status": "ok", "model_version": model_version}
+
 
 @app.post(
     "/predict",
@@ -119,20 +188,31 @@ def health():
             "description": "Server Error — model not loaded or internal failure",
             "content": {
                 "application/json": {
-                    "example": {"detail": {"error": "Failed to load model", "reason": "..."}}  # noqa: E231
+                    "example": {"detail": {"error": "Failed to load model", "reason": "..."}}
                 }
             },
         },
     },
 )
 def predict(payload: Dict[str, Any]):
+    """Predict diabetes progression risk for a given patient feature set.
+
+    Args:
+        payload (Dict[str, Any]): JSON mapping of feature names to numeric values.
+
+    Returns:
+        dict: A JSON object with a single field `"prediction"` containing the model’s output.
+    """
     try:
         data = DiabetesFeatures(**payload)
     except ValidationError as e:
-        raise HTTPException(status_code=400, detail={"error": "Invalid payload", "issues": e.errors()})
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "Invalid payload", "issues": e.errors()}
+        ) from e
 
     _ensure_model_loaded()
 
-    x = np.array([[getattr(data, fname) for fname in feature_names]], dtype=float)
+    x = np.array([[getattr(data, fname) for fname in list(feature_names)]], dtype=float)
     pred = float(pipe.predict(x)[0])
     return {"prediction": pred}
