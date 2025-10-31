@@ -22,15 +22,15 @@ def make_pipeline(model: str) -> Pipeline:
     if model == "linear":
         return Pipeline([("scaler", StandardScaler()), ("reg", LinearRegression())])
     if model == "ridge":
-        # modest L2 regularization for v0.2 improvement
-        return Pipeline([("scaler", StandardScaler()), ("reg", Ridge(alpha=1.0, random_state=42))])
+        return Pipeline([("scaler", StandardScaler()), ("reg", Ridge(alpha=0.25, random_state=42))])
     raise ValueError(f"Unknown model: {model}")
+
 
 
 def main():
     """Train, evaluate, and save artifacts (pipeline, features, metrics)."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["linear", "ridge"], default="linear")
+    parser.add_argument("--model", choices=["linear", "ridge", "hgb"], default="linear")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", default="artifacts")
     parser.add_argument("--test-size", type=float, default=0.2)
@@ -40,15 +40,15 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    X, y, feature_names = load_dataset()
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=args.test_size, random_state=args.seed
+    x, y, feature_names = load_dataset()
+    x_train, x_test, y_train, y_test = train_test_split(
+        x, y, test_size=args.test_size, random_state=args.seed
     )
 
     pipe = make_pipeline(args.model)
-    pipe.fit(X_train, y_train)
+    pipe.fit(x_train, y_train)
 
-    preds = pipe.predict(X_test)
+    preds = pipe.predict(x_test)
     rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
 
     out = pathlib.Path(args.output_dir)
@@ -62,8 +62,8 @@ def main():
         "seed": args.seed,
         "test_size": args.test_size,
         "rmse": rmse,
-        "n_train": int(len(X_train)),
-        "n_test": int(len(X_test)),
+        "n_train": int(len(x_train)),
+        "n_test": int(len(x_test)),
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
 

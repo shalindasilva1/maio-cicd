@@ -6,3 +6,6 @@ numpy
 pandas
 joblib
 pylint
+pytest
+httpx
+ruff

@@ -31,10 +31,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-          # If your train script lives in a package, also allow editable:
-          if [ -f pyproject.toml ] || [ -f setup.cfg ] || [ -f setup.py ]; then pip install -e .; fi
+          pip install -r requirements.txt
 
       - name: Train model (bake artifacts)
         shell: bash
@@ -54,7 +51,15 @@ jobs:
       - name: Unit tests
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest -q
+        run: |
+          set -euo pipefail
+          pytest -q
+          rmse=$(jq -r '.rmse' artifacts/metrics.json)
+          echo "Model RMSE: $rmse"
+          max_rmse=55
+          # Compare numerically; fail if worse
+          awk -v r="$rmse" -v t="$max_rmse" 'BEGIN {exit (r>t)}' \
+            || { echo "RMSE $rmse exceeds threshold $max_rmse"; exit 1; }
 
       - name: Log in to GHCR
         uses: docker/login-action@v3

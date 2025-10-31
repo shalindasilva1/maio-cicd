@@ -3,7 +3,7 @@ PY=python
 .PHONY: setup train-v01 run test lint docker-build docker-run
 
 setup:
-	pip install -r requirements-dev.txt
+	pip install -r requirements.txt
 
 train-v01:
 	$(PY) -m ml.train --seed 42 --output-dir artifacts --version v0.1
@@ -26,6 +26,6 @@ docker-run:
 	docker run -p 8080:8080 ghcr.io/ORG/REPO:local
 
 train-v02:
-	python -m ml.train --model ridge --seed 42 --output-dir artifacts --version v0.2
+	python -m ml.train --model ridge --seed 42 --output-dir artifacts --version v0.2 --test-size 0.1
 	mkdir -p app/model && cp artifacts/pipeline.pkl app/model/ && cp artifacts/feature_names.json app/model/
 	echo v0.2 > app/model/MODEL_VERSION
